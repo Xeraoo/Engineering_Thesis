@@ -1,0 +1,126 @@
+/**** Start of imports. If edited, may not auto-convert in the playground. ****/
+var table = ee.FeatureCollection("users/tymoteuszmaj00/Granice_Krakow");
+/***** End of imports. If edited, may not auto-convert in the playground. *****/
+//Setting up the work area
+var krakow = ee.Geometry.Rectangle([19.8, 49.9, 20.2, 50.2]); // Set work area as krakow using a rectangle
+Map.setCenter(19.96, 50.06, 12); // Center the map on the work area
+Map.addLayer(ee.Image().paint(krakow, 0, 2), {}, 'Kraków'); // Add the work area to the map
+
+var granice_krakow = ee.FeatureCollection("users/tymoteuszmaj00/Granice_Krakow");
+Map.addLayer(granice_krakow, {}, 'Granice Krakow');
+
+// Download LANDSAT/LC08/C01/T1_TOA data
+var landsat = ee.ImageCollection("LANDSAT/LC08/C01/T1_TOA")
+    .filterBounds(krakow);
+    
+var image = landsat.median(); // Select the median image from the collection
+
+//Docięcie obszaru pracy do Granic Krakowa
+var image = image.clip(granice_krakow);
+
+
+// RGB image
+var rgb = image.select(['B4', 'B3', 'B2']); // Create RGB image using red, green, and blue bands
+Map.addLayer(rgb, {min: 0, max: 0.3}, 'RGB'); // Display the RGB image on the map
+
+// Clouds and aerosols
+var cloudMask = image.select(['BQA']).eq(61440) // Mask pixels likely to contain clouds or cloud shadows
+    .reduce(ee.Reducer.anyNonZero());
+var mask = cloudMask.not();
+var rgbMasked = rgb.updateMask(mask); // Apply the mask to the RGB image
+
+var brightness = 1.3; // Adjust the brightness of the RGB image
+var contrast = 1.1; // Adjust the contrast of the RGB image
+var rgbAdjusted = rgbMasked.multiply(brightness).multiply(contrast); // Apply the brightness and contrast adjustments
+Map.addLayer(rgbAdjusted, {min: 0, max: 0.3}, 'Adjusted RGB'); // Display the adjusted RGB image on the map
+
+// Sharpening
+var hsv = rgbAdjusted.select(['B4', 'B3', 'B2']).rgbToHsv(); // Convert RGB bands to HSV color space
+var sharpened = ee.Image.cat([hsv.select('hue'), hsv.select('saturation'), image.select('B8')]).hsvToRgb(); // Convert the V band in HSV to 8-panchromatic band and concatenate
+Map.addLayer(sharpened, {min: 0, max: 0.25, gamma: [1.3, 1.3, 1.3]}, 'pan-sharpened'); // Display the pan-sharpened image
+
+// Add spectral channels
+var imageWithoutB4B3B2 = image.select([0, 1, 3, 4, 5, 6, 7]); // Select all bands except B4, B3, and B2
+var sharpenedWithSpectralChannels = sharpened.addBands(imageWithoutB4B3B2); // Add the remaining bands to the pan-sharpened image
+var allBands = image.bandNames(); // Get all band names
+var presentBands = sharpenedWithSpectralChannels.bandNames(); // Get the band names of the pan-sharpened image
+var missingBands = allBands.removeAll(presentBands); // Calculate the missing band names
+var missingBandsImage = image.select(missingBands); //
+
+// Adds the missing bands image to the existing sharpened image with spectral channels
+var sharpenedWithSpectralChannels = sharpenedWithSpectralChannels.addBands(missingBandsImage);
+
+// Adds a layer to the map with the sharpened image with spectral channels
+Map.addLayer(sharpenedWithSpectralChannels, {}, 'Sharpened with Spectral Channels (excluding B4, B3, B2)');
+
+// Selects the red, blue, green, and NIR bands from the sharpened image with spectral channels
+var red = sharpenedWithSpectralChannels.select('B4');
+var nir = sharpenedWithSpectralChannels.select('B5');
+var blue = sharpenedWithSpectralChannels.select('B2');
+var green = sharpenedWithSpectralChannels.select('B3');
+
+// Computes the NDVI by subtracting the red band from the NIR band, dividing the result by their sum, and renaming the result
+var ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI');
+
+// Adds a layer to the map with the NDVI image and a palette ranging from blue to green
+Map.addLayer(ndvi, {min: -1, max: 1, palette: ['blue', 'white', 'green']}, 'NDVI');
+
+// Computes the EVI by subtracting the red band from the NIR band, dividing the result by the sum of NIR + red + 1, multiplying the result by 2.5, and renaming the result
+var evi = nir.subtract(red).divide(nir.add(red).multiply(2).add(1)).multiply(2.5).rename('EVI');
+
+// Computes the SAVI by subtracting the red band from the NIR band, dividing the result by the sum of NIR + red + 0.5, multiplying the result by 1.5, and renaming the result
+var savi = nir.subtract(red).divide(nir.add(red).add(0.5)).multiply(1.5).rename('SAVI');
+
+// Computes the GVI by subtracting the green band from the NIR band, dividing the result by the sum of NIR + green, and renaming the result
+var gvi = nir.subtract(green).divide(nir.add(green)).rename('GVI');
+
+// Adds a layer to the map with the EVI image and a palette ranging from blue to green
+Map.addLayer(evi, {min: -1, max: 1, palette: ['blue', 'white', 'green']}, 'EVI');
+
+// Adds a layer to the map with the SAVI image and a palette ranging from blue to green
+Map.addLayer(savi, {min: -1, max: 1, palette: ['blue', 'white', 'green']}, 'SAVI');
+
+// Adds a layer to the map with the GVI image and a palette ranging from blue to green
+Map.addLayer(gvi, {min: -1, max: 1, palette: ['blue', 'white', 'green']}, 'GVI');
+
+//NDWI (Normalized Difference Water Index): NDWI is used to identify areas of water bodies in a scene by using near-infrared (NIR) and green spectral bands. NDWI is calculated as:
+var ndwi = nir.subtract(green).divide(nir.add(green)).rename('NDWI');
+Map.addLayer(ndwi, {min: -1, max: 1, palette: ['blue', 'white', 'green']}, 'NDWI');
+
+
+//KLASYFIKACJA
+
+// Make the training dataset.
+var training = sharpenedWithSpectralChannels.sample({
+  region: granice_krakow,
+  scale: 30,
+  numPixels: 5000
+});
+
+// Instantiate the clusterer and train it.
+var clusterer = ee.Clusterer.wekaKMeans(8).train(training);
+
+// Cluster the input using the trained clusterer.
+var result = sharpenedWithSpectralChannels.cluster(clusterer);
+
+// Display the clusters with random colors.
+Map.addLayer(result.randomVisualizer(), {}, 'Klasyfikacja za pomocą Clustra');
+
+//kLASYFIKACJA ndvi
+// Define a threshold for each class
+var waterThreshold = -0.8;
+var builtUpThreshold = 0.05;
+var dryVegetationThreshold = 0.35;
+var healthyVegetationThreshold = 0.7;
+
+// Create a mask for each class
+var water = ndvi.lt(waterThreshold);
+var builtUp = ndvi.lt(builtUpThreshold).and(ndvi.gte(waterThreshold));
+var dryVegetation = ndvi.lt(dryVegetationThreshold).and(ndvi.gte(builtUpThreshold));
+var healthyVegetation = ndvi.gte(healthyVegetationThreshold);
+
+// Combine the masks into a single image
+var classified = water.or(builtUp).or(dryVegetation).or(healthyVegetation);
+
+// Display the result
+Map.addLayer(classified.mask(classified), {palette: ['blue', 'gray', 'brown', 'green']}, 'Klasyfikacja NDVI');
